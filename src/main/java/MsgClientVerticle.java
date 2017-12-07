@@ -1,13 +1,16 @@
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Future;
-
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.EventBus;
-import io.vertx.core.http.HttpClient;
 import io.vertx.core.json.JsonObject;
-
+import io.vertx.core.net.NetClient;
+import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.impl.SocketAddressImpl;
+import io.vertx.core.parsetools.RecordParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 
 public class MsgClientVerticle extends AbstractVerticle {
 
@@ -15,19 +18,16 @@ public class MsgClientVerticle extends AbstractVerticle {
 
     private String eBusTag;
     private String backwardTag;
+    private NetClient netClient;
     private String targetHost;
     private int port;
     private String id;
-    private String path;
 
     private EventBus eBus;
 
-    private HttpClient client;
-
-    public MsgClientVerticle(String eBusTag, String targetHost, int port, String path, String id, String backwardTag) {
+    public MsgClientVerticle(String eBusTag, String targetHost, int port, String id, String backwardTag) {
         this.eBusTag = eBusTag;
         this.targetHost = targetHost;
-        this.path = path;
         this.port = port;
         this.id = id;
         this.backwardTag = backwardTag;
@@ -37,38 +37,43 @@ public class MsgClientVerticle extends AbstractVerticle {
 
     @Override
     public void start(Future<Void> startFuture) throws Exception {
-        L.info("Initializing client connection to " + targetHost + ":" + port + path);
+        L.info("Initializing client connection to " + targetHost + ":" + port);
         eBus = vertx.eventBus();
-
-        try {
-
-
-            client = vertx.createHttpClient();
-
-            client.websocket(port, targetHost, path, webSock -> {
-                L.info("Connected to " + targetHost + ":" + port + "/" + path);
-                eBus.publish(backwardTag, Utils.msg("Connected"));
-                webSock.binaryMessageHandler(buf -> {
-                    eBus.publish(backwardTag, Utils.bufToJson(buf));
-                });
-                eBus.consumer(eBusTag).handler(msg -> {
-                    JsonObject message = (JsonObject) msg.body();
-                    webSock.writeBinaryMessage(Utils.jsonToBuf(message));
-                });
-            });
-        } catch (NullPointerException e) {
-            L.error("Null Pointer: " + e.getLocalizedMessage());
-            e.printStackTrace();
-        }
-
-
+        netClient = vertx.createNetClient();
+        netClient.connect(new SocketAddressImpl(port, targetHost), sock -> {
+           if (sock.succeeded()) {
+               L.info("Successfully connected to " + targetHost + ":" + port);
+               eBus.publish(backwardTag, Utils.msg("Connected"));
+               NetSocket socket = sock.result();
+               eBus.consumer(eBusTag).handler(msg -> {
+                   JsonObject message = (JsonObject) msg.body();
+                   socket.write(Utils.jsonToBinary(message));
+               });
+               RecordParser parser = RecordParser.newDelimited(Buffer.buffer("\n".getBytes(StandardCharsets.US_ASCII)), socket)
+                       .endHandler((v) -> {
+                           eBus.publish(backwardTag, Utils.eBusMsgErr("Server disconnected"));
+                           socket.close();
+                       })
+                       .exceptionHandler(throwable -> {
+                           eBus.publish(backwardTag, Utils.eBusMsgErr(throwable.getLocalizedMessage()));
+                           throwable.printStackTrace();
+                           socket.close();
+                       })
+                       .handler(buf -> {
+                           eBus.publish(backwardTag, Utils.msg(new String(buf.getBytes(), StandardCharsets.US_ASCII)));
+                       });
+           } else {
+               L.info("Cannot connect to " + targetHost + ":" + port);
+               eBus.publish(backwardTag, Utils.eBusMsgErr("Cannot connect"));
+           }
+        });
         startFuture.complete();
     }
 
     @Override
     public void stop(Future<Void> stopFuture) throws Exception {
-        L.info("Connection to " + targetHost + ":" + port + "/" + path + " closed");
-        client.close();
+        netClient.close();
+        L.info("Connection to " + targetHost + ":" + port + " closed");
         stopFuture.complete();
     }
 }

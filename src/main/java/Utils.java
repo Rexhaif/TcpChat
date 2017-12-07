@@ -16,8 +16,8 @@ public class Utils {
         return new JsonObject().put("msg", payload);
     }
 
-    public static Buffer jsonToBuf(JsonObject json) {
-        return Buffer.buffer(json.encode().getBytes(StandardCharsets.UTF_8));
+    public static Buffer jsonToBinary(JsonObject json) {
+        return Buffer.buffer((json.getString("msg") + "\n").getBytes(StandardCharsets.US_ASCII));
     }
 
     public static JsonObject bufToJson(Buffer buffer) {

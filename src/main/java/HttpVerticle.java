@@ -47,137 +47,125 @@ public class HttpVerticle extends AbstractVerticle {
 
         router.get("/stats").handler(rtx -> {
 
-            rtx.response().setStatusCode(200).setChunked(true).headers().add("Content-Type", "application/json");
-
             rtx.response().end(Utils.snapshotMetrics(metrics).encodePrettily());
 
         });
 
-        router.post("/server/:port/:path/start").handler(rtx -> {
+        router.post("/server/:port/start").handler(rtx -> {
 
             int port = Integer.parseInt(rtx.request().getParam("port"));
-            String path = "/" + rtx.request().getParam("path");
-            if (chats.containsKey(port + "@" + path)) {
+            if (chats.containsKey(port + "S")) {
                 rtx.response().setStatusCode(403).end();
             } else {
-                vertx.deployVerticle(new MsgServerVerticle(port, path, port + "@" + path), res -> {
-                    if (res.succeeded()) {
-                        String depId = res.result();
-                        chats.put(port + "@" + path, new Pair<>(depId, new CopyOnWriteArrayList<>()));
-                        eBus.consumer(port + "@" + path).handler(msg -> {
-                           chats.get(port + "@" + path).getValue().add((JsonObject) msg.body());
-                        });
-                        rtx.response().setStatusCode(201).end();
-                    } else {
-                        rtx.response().setStatusCode(500).end();
-                    }
-                });
+                vertx.deployVerticle(
+                        new MsgServerVerticle(port, "portS" + port, "backS" + port),
+                        res -> {
 
+                            chats.put(port + "S", new Pair<>(res.result(), new CopyOnWriteArrayList<>()));
+
+                            eBus.consumer("backS" + port).handler(msg -> {
+                                chats.get(port + "S").getValue().add((JsonObject) msg.body());
+                            });
+
+                        }
+                );
+                rtx.response().setStatusCode(201).end();
             }
 
         });
 
-        router.get("/server/:port/:path/messages").handler(rtx -> {
+        router.get("/server/:port/messages").handler(rtx -> {
 
+            JsonObject rsp = new JsonObject();
+            JsonArray messages = new JsonArray();
             int port = Integer.parseInt(rtx.request().getParam("port"));
-            String path = "/" + rtx.request().getParam("path");
-            if (!chats.containsKey(port + "@" + path)) {
+            if (!chats.containsKey(port + "S")) {
                 rtx.response().setStatusCode(404).end();
             } else {
-                JsonObject rsp = new JsonObject();
-                JsonArray messages = new JsonArray();
-                chats.get(port + "@" + path).getValue().forEach(messages::add);
-                rtx.response().setChunked(true).headers().add("Content-Type", "application/json");
-                rtx.response().write(rsp.put("messages", messages).encodePrettily());
-                rtx.response().end();
+                chats.get(port + "S").getValue().forEach(messages::add);
+                rsp.put("messages", messages);
+                rtx.response().setChunked(true).write(rsp.encodePrettily()).end();
             }
 
         });
 
-        router.post("/server/:port/:path/destroy").handler(rtx -> {
+        router.post("/server/:port/destroy").handler(rtx -> {
            int port = Integer.parseInt(rtx.request().getParam("port"));
-           String path = "/" + rtx.request().getParam("path");
-           if (!chats.containsKey(port + "@" + path)) {
+           if (!chats.containsKey(port + "S")) {
                rtx.response().setStatusCode(404).end();
            } else {
-               String depId = chats.get(port + "@" + path).getKey();
+               String depId = chats.get(port + "S").getKey();
                vertx.undeploy(depId);
-               chats.remove(port + "@" + path);
+               chats.remove(port + "S");
                rtx.response().setStatusCode(200).end();
            }
         });
 
-        router.post("/client/:port/:path/:login/create").handler(rtx -> {
+        router.post("/client/:port/:login/create").handler(rtx -> {
 
             int port = Integer.parseInt(rtx.request().getParam("port"));
-            String path = "/" + rtx.request().getParam("path");
-
             String login = rtx.request().getParam("login");
-            if (chats.containsKey(port + "@" + login + "@" + path)) {
+            if (chats.containsKey(port + "@" + login)) {
                 rtx.response().setStatusCode(403).end();
             } else {
-                vertx.deployVerticle(new MsgClientVerticle(
-                        port + "@" + login + "@" + path,
-                        "127.0.0.1",
-                        port, path,
-                        login, port + "@" + login + "@" + path
-                ), res -> {
-                    if (res.succeeded()) {
-                        String depId = res.result();
-                        chats.put(port + "@" + login + "@" + path, new Pair<>(depId, new CopyOnWriteArrayList<>()));
-                        eBus.consumer(port + "@" + login + "@" + path).handler(msg -> {
-                            chats.get(port + "@" + login + "@" + path).getValue().add((JsonObject) msg.body());
-                        });
-                        rtx.response().setStatusCode(200).end();
-                    } else rtx.response().setStatusCode(500).end();
-                });
+                vertx.deployVerticle(
+                        new MsgClientVerticle(
+                                port + "@" + login,
+                                "127.0.0.1",
+                                port, login,
+                                "back" + port + "@" + login
+                        ), res -> {
+                            chats.put(port + "@" + login, new Pair<>(res.result(), new CopyOnWriteArrayList<>()));
+                            eBus.consumer("back" + port + "@" + login).handler(msg -> {
+                                chats.get(port + "@" + login).getValue().add((JsonObject) msg.body());
+                            });
+                        }
+                );
+                rtx.response().setStatusCode(201).end();
             }
 
         });
 
-        router.post("/client/:port/:path/:login/sendmsg").handler(rtx -> {
+        router.post("/client/:port/:login/sendmsg").handler(rtx -> {
 
             int port = Integer.parseInt(rtx.request().getParam("port"));
-            String path = "/" + rtx.request().getParam("path");
             String login = rtx.request().getParam("login");
-            if (!chats.containsKey(port + "@" + login + "@" + path)) {
+            if (!chats.containsKey(port + "@" + login)) {
                 rtx.response().setStatusCode(404).end();
             } else {
-               String message = rtx.getBodyAsString();
-               eBus.publish(port + "@" + login + "@" + path, Utils.msg(login + ": " + message));
-               rtx.response().setStatusCode(200).end();
+                String msg = rtx.getBodyAsString();
+                eBus.publish(port + "@" + login, Utils.msg(login + ": " + msg));
+                rtx.response().setStatusCode(200).end();
             }
 
         });
 
-        router.get("/client/:port/:path/:login/messages").handler(rtx -> {
+        router.get("/client/:port/:login/messages").handler(rtx -> {
 
             int port = Integer.parseInt(rtx.request().getParam("port"));
-            String path = "/" + rtx.request().getParam("path");
             String login = rtx.request().getParam("login");
-            if (!chats.containsKey(port + "@" + login + "@" + path)) {
+            if (!chats.containsKey(port + "@" + login)) {
                 rtx.response().setStatusCode(404).end();
             } else {
+                JsonObject rsp = new JsonObject();
                 JsonArray messages = new JsonArray();
-                chats.get(port + "@" + login + "@" + path).getValue().forEach(messages::add);
-                rtx.response().setStatusCode(200).setChunked(true).headers().add("Content-Type", "application/json");
-                rtx.response().write(new JsonObject().put("messages", messages).encodePrettily());
-                rtx.response().end();
+                chats.get(port + "@" + login).getValue().forEach(messages::add);
+                rsp.put("messages", messages);
+                rtx.response().setChunked(true).write(rsp.encodePrettily()).end();
             }
 
         });
 
-        router.post("/client/:port/:path/:login/destroy").handler(rtx -> {
+        router.post("/client/:port/:login/destroy").handler(rtx -> {
 
             int port = Integer.parseInt(rtx.request().getParam("port"));
-            String path = "/" + rtx.request().getParam("path");
             String login = rtx.request().getParam("login");
-            if (!chats.containsKey(port + "@" + login + "@" + path)) {
+            if (!chats.containsKey(port + "@" + login)) {
                 rtx.response().setStatusCode(404).end();
             } else {
-                String depId = chats.get(port + "@" + login + "@" + path).getKey();
+                String depId = chats.get(port + "@" + login).getKey();
                 vertx.undeploy(depId);
-                chats.remove(port + "@" + login + "@" + path);
+                chats.remove(port + "@" + login);
                 rtx.response().setStatusCode(200).end();
             }
 
